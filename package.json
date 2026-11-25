@@ -5,10 +5,10 @@
   "type": "module",
   "private": true,
   "license": "MIT",
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=20" },
   "scripts": {
     "build": "node scripts/build-traps.mjs",
     "check": "node scripts/build-traps.mjs --check",
-    "test": "node scripts/build-traps.mjs --check && node --test \"test/*.test.mjs\""
+    "test": "node scripts/build-traps.mjs --check && node --test test/core.test.mjs test/traps-and-hook.test.mjs"
   }
 }
