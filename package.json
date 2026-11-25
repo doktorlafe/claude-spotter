@@ -1,0 +1,14 @@
+{
+  "name": "spotter",
+  "version": "0.1.0",
+  "description": "A Claude Code plugin that stops you one second before you step into a trap only experience would warn you about.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "node scripts/build-traps.mjs",
+    "check": "node scripts/build-traps.mjs --check",
+    "test": "node scripts/build-traps.mjs --check && node --test \"test/*.test.mjs\""
+  }
+}

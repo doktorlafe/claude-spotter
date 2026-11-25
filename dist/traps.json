@@ -1,0 +1,598 @@
+[
+  {
+    "id": "docker-bypasses-firewall",
+    "title": "Docker-published ports bypass your firewall (ufw/firewalld) and are open to the internet",
+    "domain": "docker",
+    "severity": "high",
+    "on": "command",
+    "match": "docker\\s+(container\\s+)?(run|create)\\b.*\\s(-p|--publish)[\\s=]+[\"']?\\d+:\\d+",
+    "unless": "(-p|--publish)[\\s=]+[\"']?127\\.0\\.0\\.1:",
+    "hit": [
+      "docker run -d -p 5432:5432 postgres",
+      "docker run --publish=8080:80 nginx"
+    ],
+    "miss": [
+      "docker run -d -p 127.0.0.1:5432:5432 postgres",
+      "docker ps"
+    ],
+    "body": "Docker writes its own iptables rules, which run *before* ufw/firewalld. `-p 5432:5432` makes the port reachable\nfrom the whole internet even when `ufw deny 5432` says otherwise. Bots scan for open databases within minutes.\n\nInstead: bind to localhost when only this machine needs it — `-p 127.0.0.1:5432:5432` — or put a reverse proxy in front.\nIf it must be public, filter it in the `DOCKER-USER` iptables chain, not in ufw."
+  },
+  {
+    "id": "docker-compose-down-volumes",
+    "title": "docker compose down -v deletes your volumes — database data included",
+    "domain": "docker",
+    "severity": "high",
+    "on": "command",
+    "match": "docker[- ]compose\\s+(\\S+\\s+)*down\\b.*(\\s-v\\b|--volumes)",
+    "hit": [
+      "docker compose down -v",
+      "docker-compose -f prod.yml down --volumes"
+    ],
+    "miss": [
+      "docker compose down",
+      "docker compose up -d"
+    ],
+    "body": "`-v` / `--volumes` removes the named volumes declared in the compose file. That is where Postgres, MySQL, Redis etc.\nkeep their data — it is gone, with no recycle bin.\n\nIf you only want to restart or rebuild: `docker compose down` (no `-v`) keeps the data. Back up first\n(e.g. `docker compose exec db pg_dump ...`) if you really want a clean slate."
+  },
+  {
+    "id": "docker-compose-exposed-ports",
+    "title": "Ports in docker-compose bypass your firewall too — bind them to 127.0.0.1",
+    "domain": "docker",
+    "severity": "medium",
+    "on": "file",
+    "path": "(^|[\\\\/])(docker-)?compose[^\\\\/]*\\.ya?ml$",
+    "match": "^\\s*-\\s*[\"']?\\d+:\\d+",
+    "flags": "im",
+    "hit": [
+      "compose.yaml ::: ports:\n      - \"5432:5432\""
+    ],
+    "miss": [
+      "docker-compose.yml ::: ports:\n      - \"127.0.0.1:5432:5432\"",
+      "config.yml :::       - \"5432:5432\""
+    ],
+    "body": "A `ports:` entry like `\"5432:5432\"` publishes the port on every network interface, and Docker's iptables rules\nskip ufw/firewalld — so it is reachable from the internet even if your firewall \"blocks\" it.\n\nInstead: `\"127.0.0.1:5432:5432\"` for things only this host needs, or drop `ports:` entirely and let containers talk\nover the compose network (services reach each other by service name, no published port needed)."
+  },
+  {
+    "id": "docker-prune-volumes",
+    "title": "Pruning volumes permanently deletes data of every stopped container",
+    "domain": "docker",
+    "severity": "high",
+    "on": "command",
+    "match": "docker\\s+(volume\\s+prune|system\\s+prune\\b.*--volumes)",
+    "hit": [
+      "docker volume prune -f",
+      "docker system prune -a --volumes"
+    ],
+    "miss": [
+      "docker system prune",
+      "docker image prune -a"
+    ],
+    "body": "`docker volume prune` (and `system prune --volumes`) deletes every volume not attached to a *running* container.\nA database you just stopped for a moment counts as unused — its data goes too.\n\nSafer: `docker system prune` (no `--volumes`) frees most space from images and build cache. Remove specific volumes\nby name with `docker volume rm <name>` after checking `docker volume ls`."
+  },
+  {
+    "id": "docker-socket-mount",
+    "title": "Mounting /var/run/docker.sock gives that container full root on the host",
+    "domain": "docker",
+    "severity": "medium",
+    "on": "command",
+    "match": "/var/run/docker\\.sock",
+    "hit": [
+      "docker run -v /var/run/docker.sock:/var/run/docker.sock portainer/portainer-ce"
+    ],
+    "miss": [
+      "docker run -v ./data:/data nginx"
+    ],
+    "body": "Whoever can talk to the Docker socket can start a privileged container that mounts `/` — that is root on the host.\nMounting it into a container means: if that container (or its web UI) is compromised, the whole server is.\n\nOnly do it for tools you trust and never expose their UI publicly without authentication. Read-only (`:ro`) does\n**not** help — the API is still fully usable through a read-only socket mount."
+  },
+  {
+    "id": "env-file-gitignore",
+    "title": "Creating a .env file — make sure it is in .gitignore before the next commit",
+    "domain": "git",
+    "severity": "low",
+    "on": "file",
+    "path": "(^|[\\\\/])\\.env(\\.local|\\.production|\\.development)?$",
+    "match": ".*",
+    "hit": [
+      "/home/me/app/.env ::: DATABASE_URL=postgres://user:pass@localhost/db"
+    ],
+    "miss": [
+      "/home/me/app/.env.example ::: DATABASE_URL="
+    ],
+    "body": "`.env` files hold real credentials. `git add .` or `git commit -a` will happily include them unless `.gitignore`\nlists them.\n\nCheck with `git check-ignore -v .env` (prints the matching rule if it is ignored). Keep a committed `.env.example`\nwith placeholders so others know which variables exist."
+  },
+  {
+    "id": "git-add-secrets",
+    "title": "You are about to commit a secrets file — once pushed, assume it is leaked",
+    "domain": "git",
+    "severity": "high",
+    "on": "command",
+    "match": "\\bgit\\s+add\\b.*(\\s|/)(\\.env(\\.local|\\.production)?|id_rsa|id_ed25519|[^\\s/]+\\.pem|[^\\s/]+\\.key|credentials\\.json)(\\s|$)",
+    "hit": [
+      "git add .env",
+      "git add config/credentials.json src/app.js"
+    ],
+    "miss": [
+      "git add .env.example",
+      "git add src/app.js"
+    ],
+    "body": "Files like `.env`, private keys and `credentials.json` usually hold passwords and API keys. After a push to a public\nrepo, bots scrape them within minutes; deleting the file in a later commit does not remove it from history.\n\nAdd the file to `.gitignore`, commit an `.env.example` with placeholder values instead, and if a real secret was\never pushed: rotate (revoke and re-create) it."
+  },
+  {
+    "id": "git-discard-changes",
+    "title": "This throws away uncommitted work — git has no undo for it",
+    "domain": "git",
+    "severity": "high",
+    "on": "command",
+    "match": "\\bgit\\s+(reset\\s+(\\S+\\s+)*--hard|clean\\s+-\\w*f|checkout\\s+(--\\s+)?\\.(\\s|$)|restore\\s+(--\\S+\\s+)*\\.(\\s|$))",
+    "hit": [
+      "git reset --hard HEAD~1",
+      "git clean -fd",
+      "git checkout -- ."
+    ],
+    "miss": [
+      "git reset --soft HEAD~1",
+      "git checkout main"
+    ],
+    "body": "`reset --hard`, `clean -f`, `checkout .` and `restore .` delete changes that were never committed. Committed work can\nusually be recovered with `git reflog`; uncommitted edits and untracked files cannot.\n\nSafer first step: `git stash -u` keeps everything recoverable (`git stash pop`). Check what would go with\n`git status` and `git clean -n` (dry run)."
+  },
+  {
+    "id": "git-force-push",
+    "title": "Force-pushing overwrites the remote branch — others' commits can silently disappear",
+    "domain": "git",
+    "severity": "high",
+    "on": "command",
+    "match": "\\bgit\\s+push\\b.*(\\s--force\\b|\\s-f\\b)",
+    "unless": "--force-with-lease|--force-if-includes",
+    "hit": [
+      "git push --force origin main",
+      "git push -f"
+    ],
+    "miss": [
+      "git push --force-with-lease",
+      "git push origin main"
+    ],
+    "body": "`--force` replaces the remote branch with yours. Any commit someone (or another machine, or CI) pushed since your\nlast fetch is dropped from the branch.\n\nIf you rewrote history on purpose, use `git push --force-with-lease`: it refuses when the remote has commits you\nhaven't seen. Never force-push a shared `main`."
+  },
+  {
+    "id": "secret-already-committed",
+    "title": "A leaked secret must be rotated — deleting the commit is not enough",
+    "domain": "git",
+    "severity": "medium",
+    "on": "prompt",
+    "match": "(commit|push|nahr|github)\\w*.{0,60}(password|api[ _-]?key|secret|token|heslo|klíč)|(password|api[ _-]?key|secret|token|heslo|klíč).{0,60}(commit|push|nahr|github)",
+    "hit": [
+      "I accidentally committed my API key to github, how do I remove it?",
+      "omylem jsem commitnul heslo do repa"
+    ],
+    "miss": [
+      "how do I write a good commit message?"
+    ],
+    "body": "Once a secret has been pushed, treat it as public: forks, clones, caches and secret-scanning bots may already have it.\nRewriting history (`git filter-repo`, BFG) is cleanup, not a fix.\n\nThe fix is to rotate it first — revoke the key/password at the provider and create a new one — then remove it from the\ncode, load it from environment variables or `.env` (gitignored), and optionally scrub history."
+  },
+  {
+    "id": "irc-four-passwords",
+    "title": "IRC has four different passwords — and mixing them up is the classic beginner trap",
+    "domain": "irc",
+    "severity": "medium",
+    "on": "prompt",
+    "match": "\\b(irc|ircd|inspircd|unrealircd|ergo|ngircd|znc|soju|weechat|hexchat|irssi|nickserv|libera\\.chat)\\b",
+    "hit": [
+      "I want to run my own IRC server",
+      "jak nastavit nickserv v hexchat?"
+    ],
+    "miss": [
+      "how do I set up a discord bot?"
+    ],
+    "body": "IRC passwords are separate things that clients and docs often call just \"password\":\n1. **Server password** (`PASS`) — needed to connect at all, set in the server config; on public networks usually empty.\n2. **NickServ / SASL password** — owns your registered nickname (account), set via `/msg NickServ REGISTER`.\n3. **Oper password** — makes you an IRC operator, defined in the server's `oper` block, used with `/OPER`.\n4. **Channel key** (`+k`) — needed to join one channel: `/join #chan key`.\nA bouncer (ZNC, soju) adds a fifth: its own login, often sent through the server-password field as `user:pass`.\n\nOther common pitfalls: use TLS on port 6697 (6667 is plaintext), and running a server exposes its IP — Cloudflare's\nweb proxy does not cover IRC."
+  },
+  {
+    "id": "irc-plaintext-port",
+    "title": "Port 6667 is plaintext IRC — passwords and messages travel unencrypted",
+    "domain": "irc",
+    "severity": "medium",
+    "on": "command",
+    "match": "(\\b(irssi|weechat|hexchat|ii|ncat|nc|telnet|ufw|firewall-cmd)\\b.*\\b6667\\b|\\b6667/tcp\\b)",
+    "hit": [
+      "irssi -c irc.libera.chat -p 6667",
+      "sudo ufw allow 6667/tcp"
+    ],
+    "miss": [
+      "sudo ufw allow 6697/tcp"
+    ],
+    "body": "6667 is the traditional unencrypted IRC port: your NickServ password, oper password and private messages can be read\non the network path.\n\nUse TLS on 6697 (`irssi -c irc.libera.chat -p 6697 -tls`, `/server add -ssl` in WeeChat), and on your own server open\nonly 6697 with a real certificate (Let's Encrypt)."
+  },
+  {
+    "id": "chmod-777",
+    "title": "chmod 777 lets every user and process on the machine modify (and run) these files",
+    "domain": "linux",
+    "severity": "medium",
+    "on": "command",
+    "match": "\\bchmod\\s+(-\\w+\\s+)*0?777\\b",
+    "hit": [
+      "chmod -R 777 /var/www",
+      "sudo chmod 777 app.sock"
+    ],
+    "miss": [
+      "chmod 755 deploy.sh",
+      "chmod -R u+rwX storage"
+    ],
+    "body": "777 \"fixes\" permission errors by removing permissions entirely. Any compromised service (a web app, a plugin) can then\nrewrite your code or plant scripts that run later.\n\nFind out *who* needs access instead: `ls -l` shows owner/group; usually the fix is `chown -R www-data:www-data dir`\n(or your service user) with `755` for directories and `644` for files, or adding your user to the right group."
+  },
+  {
+    "id": "crlf-line-endings",
+    "title": "Windows line endings (CRLF) in a shell script — Linux reads the \\r as part of the command",
+    "domain": "linux",
+    "severity": "low",
+    "on": "output",
+    "match": "\\$'\\\\r': command not found|\\^M: bad interpreter|\\\\r: No such file or directory",
+    "hit": [
+      "./deploy.sh: line 2: $'\\r': command not found",
+      "bash: ./run.sh: /bin/bash^M: bad interpreter: No such file or directory"
+    ],
+    "miss": [
+      "bash: foo: command not found"
+    ],
+    "body": "The file was saved on Windows (or checked out by git with `autocrlf`), so every line ends with `\\r\\n`. Bash sees\nthe invisible `\\r` as part of each command.\n\nFix the file: `sed -i 's/\\r$//' script.sh` (or `dos2unix`). Prevent it: add `*.sh text eol=lf` to `.gitattributes`\nand set your editor to LF for scripts."
+  },
+  {
+    "id": "cron-environment",
+    "title": "Cron runs with almost no environment — no PATH, no venv, different working directory",
+    "domain": "linux",
+    "severity": "low",
+    "on": "command",
+    "match": "\\bcrontab\\b(?!\\s+-l)",
+    "hit": [
+      "crontab -e",
+      "crontab mycron.txt"
+    ],
+    "miss": [
+      "crontab -l"
+    ],
+    "body": "A script that works in your terminal often fails silently in cron: PATH is minimal (`/usr/bin:/bin`), your shell\nprofile isn't loaded, the working directory is your home, and output goes nowhere.\n\nUse absolute paths everywhere (`/home/me/app/.venv/bin/python /home/me/app/job.py`), `cd` explicitly, and capture\noutput: `... >> /home/me/job.log 2>&1`. Check it ran with `grep CRON /var/log/syslog` or `journalctl -u cron`."
+  },
+  {
+    "id": "curl-pipe-shell",
+    "title": "Piping curl into a shell runs whatever the server sends — unseen, often as root",
+    "domain": "linux",
+    "severity": "medium",
+    "on": "command",
+    "match": "\\b(curl|wget)\\b[^|]*\\|\\s*(sudo\\s+)?(-\\w+\\s+)*(ba|z)?sh\\b",
+    "hit": [
+      "curl -fsSL https://get.example.sh | sudo bash",
+      "wget -qO- https://example.com/install | sh"
+    ],
+    "miss": [
+      "curl -fsSL -o install.sh https://get.example.sh"
+    ],
+    "body": "`curl ... | sh` executes the script before you or anyone has looked at it. A compromised or typo-squatted URL, or\na script that half-downloads, runs with your (or root's) rights.\n\nFor anything less than a well-known official installer: download first (`curl -fsSL -o install.sh URL`), skim it\n(`less install.sh`), then run it."
+  },
+  {
+    "id": "disk-full",
+    "title": "Disk is full — the usual suspects are Docker images, logs and caches",
+    "domain": "linux",
+    "severity": "low",
+    "on": "output",
+    "match": "No space left on device|ENOSPC",
+    "hit": [
+      "write /var/lib/docker/tmp/x: no space left on device",
+      "npm ERR! code ENOSPC"
+    ],
+    "miss": [
+      "Done in 3.2s"
+    ],
+    "body": "Before deleting things at random, see what is big: `df -h` (which disk), then `sudo du -xh / --max-depth=2 | sort -h | tail`.\n\nCommon culprits: Docker (`docker system df`, then `docker system prune` — without `--volumes`), journald logs\n(`sudo journalctl --vacuum-size=200M`), package caches (`sudo apt clean`), and runaway app logs without rotation."
+  },
+  {
+    "id": "port-already-in-use",
+    "title": "Port already in use — find the process holding it instead of changing ports blindly",
+    "domain": "linux",
+    "severity": "low",
+    "on": "output",
+    "match": "EADDRINUSE|address already in use|port is already allocated",
+    "hit": [
+      "Error: listen EADDRINUSE: address already in use :::3000",
+      "Bind for 0.0.0.0:5432 failed: port is already allocated"
+    ],
+    "miss": [
+      "Server listening on :3000"
+    ],
+    "body": "Something is already listening on that port — very often an older copy of the same app still running in the\nbackground, or a system service (a local Postgres installed earlier, Apache on 80).\n\nFind it: `sudo ss -ltnp | grep :3000` (Linux), `lsof -i :3000` (macOS), `netstat -ano | findstr :3000` (Windows).\nThen stop that process/service rather than piling up instances on new ports."
+  },
+  {
+    "id": "privileged-port",
+    "title": "Ports below 1024 need root — don't run your app as root to get port 80",
+    "domain": "linux",
+    "severity": "low",
+    "on": "output",
+    "match": "listen EACCES:? permission denied \\S*:\\d{1,3}\\b|bind\\(\\) to \\S+:\\d{1,3} failed \\(13",
+    "hit": [
+      "Error: listen EACCES: permission denied 0.0.0.0:80",
+      "nginx: [emerg] bind() to 0.0.0.0:80 failed (13: Permission denied)"
+    ],
+    "miss": [
+      "Error: listen EADDRINUSE: address already in use :::3000"
+    ],
+    "body": "On Linux, ports 0–1023 are \"privileged\": only root may listen on them. The tempting fix — `sudo node app.js` — runs\nyour whole app as root, so any bug in it becomes full control of the machine.\n\nUsual setup: run the app on a high port (3000, 8080) as a normal user and put nginx/Caddy on 80/443 as a reverse\nproxy. Alternatives: `sudo setcap 'cap_net_bind_service=+ep' $(which node)` or a systemd socket."
+  },
+  {
+    "id": "rm-rf-unset-variable",
+    "title": "rm -rf \"$VAR/\" becomes rm -rf / when the variable is empty",
+    "domain": "linux",
+    "severity": "high",
+    "on": "command",
+    "match": "\\brm\\s+-\\w*r\\w*\\s+[^;&|]*\\$\\{?[A-Za-z_]\\w*\\}?\"?/",
+    "unless": "\\$\\{\\w+:\\?",
+    "hit": [
+      "rm -rf $BUILD_DIR/",
+      "rm -rf \"${TARGET}/\"*"
+    ],
+    "miss": [
+      "rm -rf \"${DIR:?}/\"",
+      "rm -rf ./build"
+    ],
+    "body": "If the variable is unset or empty (a typo, a different shell, cron's empty environment), `rm -rf \"$DIR/\"` expands to\n`rm -rf /`. This has wiped real servers and home directories.\n\nGuard it: `rm -rf \"${DIR:?}/\"` aborts with an error when `DIR` is empty. In scripts, also use `set -u`."
+  },
+  {
+    "id": "ssh-key-permissions",
+    "title": "SSH refuses a private key that other users could read",
+    "domain": "linux",
+    "severity": "low",
+    "on": "output",
+    "match": "UNPROTECTED PRIVATE KEY FILE|Permissions 0\\d+ for .+ are too open",
+    "hit": [
+      "Permissions 0644 for '/home/me/.ssh/id_ed25519' are too open."
+    ],
+    "miss": [
+      "Permission denied (publickey)."
+    ],
+    "body": "SSH ignores private keys that are readable by group/others — a safety check, not a bug.\n\nFix: `chmod 600 ~/.ssh/id_ed25519` and `chmod 700 ~/.ssh`. On Windows, the key must be owned by and readable only\nby your user (remove \"Users\"/\"Everyone\" in the file's Security tab or with `icacls`)."
+  },
+  {
+    "id": "systemd-daemon-reload",
+    "title": "You edited a systemd unit but systemd is still using the old version",
+    "domain": "linux",
+    "severity": "low",
+    "on": "output",
+    "match": "changed on disk\\. Run .systemctl daemon-reload",
+    "hit": [
+      "Warning: The unit file, source configuration file or drop-ins of myapp.service changed on disk. Run 'systemctl daemon-reload' to reload units."
+    ],
+    "miss": [
+      "myapp.service: Succeeded."
+    ],
+    "body": "systemd caches unit files. After editing `/etc/systemd/system/*.service` (or a drop-in), restarting the service\nstill uses the cached copy, so your change \"doesn't work\".\n\nRun `sudo systemctl daemon-reload`, then `sudo systemctl restart <service>`, and check with\n`systemctl status <service>` / `journalctl -u <service> -e`."
+  },
+  {
+    "id": "ufw-enable-ssh-lockout",
+    "title": "Enabling ufw over SSH without allowing SSH first locks you out of the server",
+    "domain": "linux",
+    "severity": "high",
+    "on": "command",
+    "match": "\\bufw\\s+(--force\\s+)?enable\\b",
+    "hit": [
+      "sudo ufw enable",
+      "sudo ufw --force enable"
+    ],
+    "miss": [
+      "sudo ufw allow OpenSSH",
+      "sudo ufw status"
+    ],
+    "body": "ufw's default policy denies incoming connections. If port 22 (or your custom SSH port) isn't allowed yet, enabling\nit on a remote server cuts your current session and you can only get back in via the provider's web console.\n\nFirst: `sudo ufw allow OpenSSH` (or `sudo ufw allow 2222/tcp` for a custom port), check with `sudo ufw show added`,\nthen enable."
+  },
+  {
+    "id": "cloudflare-proxy-http-only",
+    "title": "Cloudflare's orange-cloud proxy only covers web traffic (HTTP/HTTPS)",
+    "domain": "network",
+    "severity": "medium",
+    "on": "prompt",
+    "match": "cloudflare.{0,100}\\b(irc|ssh|minecraft|smtp|mail|tcp|udp|game ?server|postgres|mysql|database|vpn|wireguard)\\b|\\b(irc|ssh|minecraft|smtp|tcp|udp|postgres|mysql|wireguard)\\b.{0,100}cloudflare",
+    "hit": [
+      "I want to hide my server IP behind cloudflare for my IRC server",
+      "can cloudflare protect my minecraft server?"
+    ],
+    "miss": [
+      "set up cloudflare for my wordpress site"
+    ],
+    "body": "The proxied (\"orange cloud\") DNS record only forwards HTTP/HTTPS on specific ports. For IRC, SSH, game servers,\nmail or databases the record is either DNS-only — which publishes your real IP — or the connection simply fails.\n\nOptions: Cloudflare Tunnel (`cloudflared`; clients may need `cloudflared access` for raw TCP), Cloudflare Spectrum\n(paid), or a cheap VPS/relay in front. Also check that the real IP doesn't leak elsewhere: old DNS records, mail\nheaders, other subdomains on the same IP."
+  },
+  {
+    "id": "dev-server-all-interfaces",
+    "title": "Binding a dev server to 0.0.0.0 exposes it to your whole network (or the internet on a VPS)",
+    "domain": "network",
+    "severity": "low",
+    "on": "command",
+    "match": "(--host(=|\\s+)0\\.0\\.0\\.0|--bind(=|\\s+)0\\.0\\.0\\.0|\\s-b\\s+0\\.0\\.0\\.0|runserver\\s+0\\.0\\.0\\.0)",
+    "hit": [
+      "npm run dev -- --host 0.0.0.0",
+      "python manage.py runserver 0.0.0.0:8000"
+    ],
+    "miss": [
+      "npm run dev",
+      "flask run --host 127.0.0.1"
+    ],
+    "body": "`0.0.0.0` means \"every network interface\". On a laptop that is everyone on the café Wi-Fi; on a VPS it is the\ninternet. Dev servers have debug pages, no auth and auto-reload — not meant to be public.\n\nUse `127.0.0.1` unless another device must reach it. To test from your phone, keep it on a trusted network; to\nshare it, use a tunnel with auth or deploy behind a real web server."
+  },
+  {
+    "id": "sudo-npm-global",
+    "title": "sudo npm install -g leaves root-owned files that cause permission errors later",
+    "domain": "node",
+    "severity": "medium",
+    "on": "command",
+    "match": "\\bsudo\\s+(-\\w+\\s+)*npm\\s+(i|install|add)\\b.*(\\s-g\\b|--global)",
+    "hit": [
+      "sudo npm install -g pm2",
+      "sudo npm i --global yarn"
+    ],
+    "miss": [
+      "npm install -g pm2",
+      "npx create-vite@latest"
+    ],
+    "body": "Running npm as root creates root-owned files in npm's cache and global folder; later non-sudo commands fail with\n`EACCES`, and install scripts of every package you install run as root.\n\nBetter: install Node through a version manager (nvm, fnm, volta) so globals live in your home directory, or set a\nuser prefix: `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to PATH. Or just use `npx`."
+  },
+  {
+    "id": "break-system-packages",
+    "title": "--break-system-packages does what it says — use a virtual environment instead",
+    "domain": "python",
+    "severity": "medium",
+    "on": "command",
+    "match": "--break-system-packages",
+    "hit": [
+      "pip install --break-system-packages requests"
+    ],
+    "miss": [
+      "pip install requests"
+    ],
+    "body": "This flag overrides the OS's protection of its own Python (PEP 668). Packages you install can replace versions that\nsystem tools rely on; the breakage often shows up weeks later during an OS upgrade.\n\nCreate a venv for the project (`python3 -m venv .venv`) or use `pipx` for tools. It takes ten seconds and is undoable\nby deleting a folder."
+  },
+  {
+    "id": "externally-managed-environment",
+    "title": "externally-managed-environment: your OS protects its Python — use a venv, not --break-system-packages",
+    "domain": "python",
+    "severity": "low",
+    "on": "output",
+    "match": "externally-managed-environment",
+    "hit": [
+      "error: externally-managed-environment"
+    ],
+    "miss": [
+      "Successfully installed requests-2.32.3"
+    ],
+    "body": "Newer Debian/Ubuntu/Fedora mark the system Python as managed by the OS (PEP 668), so `pip install` outside a virtual\nenvironment is refused. The error suggests `--break-system-packages` — that flag is named honestly.\n\nDo: `python3 -m venv .venv`, then `. .venv/bin/activate` (Windows: `.venv\\Scripts\\activate`) and `pip install ...`.\nFor CLI tools: `pipx install <tool>`. For OS-wide libraries: `sudo apt install python3-<name>`."
+  },
+  {
+    "id": "module-not-found-interpreter",
+    "title": "\"No module named X\" right after installing X usually means two different Pythons",
+    "domain": "python",
+    "severity": "low",
+    "on": "output",
+    "match": "ModuleNotFoundError: No module named",
+    "hit": [
+      "ModuleNotFoundError: No module named 'requests'"
+    ],
+    "miss": [
+      "ImportError: cannot import name 'foo' from 'bar'"
+    ],
+    "body": "Very often the package *is* installed — into a different interpreter or venv than the one running your code\n(`pip` and `python` point to different installs, the venv isn't activated, or an IDE/cron uses system Python).\n\nCheck: `python -c \"import sys; print(sys.executable)\"` vs `pip -V`. Install with the interpreter that runs the code:\n`python -m pip install requests`."
+  },
+  {
+    "id": "sudo-pip-install",
+    "title": "sudo pip install mixes packages into the system Python and can break OS tools",
+    "domain": "python",
+    "severity": "medium",
+    "on": "command",
+    "match": "\\bsudo\\s+(-\\w+\\s+)*(pip3?|python3?\\s+-m\\s+pip)\\s+install\\b",
+    "hit": [
+      "sudo pip install requests",
+      "sudo python3 -m pip install flask"
+    ],
+    "miss": [
+      "pip install requests",
+      ".venv/bin/pip install flask"
+    ],
+    "body": "The system Python belongs to your OS — apt, cloud-init and other tools depend on its packages. Overwriting them as\nroot can break those tools in confusing ways, and you end up with files apt doesn't know about.\n\nUse a virtual environment per project: `python3 -m venv .venv && . .venv/bin/activate && pip install requests`.\nFor command-line tools, `pipx install <tool>`."
+  },
+  {
+    "id": "curl-insecure",
+    "title": "Turning off TLS verification makes the connection open to interception",
+    "domain": "security",
+    "severity": "medium",
+    "on": "command",
+    "match": "(\\bcurl\\b[^|]*\\s(-k|--insecure)\\b|NODE_TLS_REJECT_UNAUTHORIZED=0|GIT_SSL_NO_VERIFY|http\\.sslVerify\\s+false)",
+    "hit": [
+      "curl -k https://api.example.com",
+      "git config --global http.sslVerify false"
+    ],
+    "miss": [
+      "curl -fsSL https://api.example.com"
+    ],
+    "body": "These flags make the \"certificate error\" go away by no longer checking who you are talking to. Anyone on the network\npath can then read and modify the traffic, including passwords and tokens — and the global git setting applies to\nevery repo, forever.\n\nFix the cause instead: a self-signed cert → trust it explicitly (`curl --cacert ca.pem`); a corporate proxy → install\nits CA; an expired cert → renew it (e.g. `certbot renew`)."
+  },
+  {
+    "id": "database-exposed",
+    "title": "This database config listens on all interfaces — bots find open databases within minutes",
+    "domain": "security",
+    "severity": "high",
+    "on": "file",
+    "path": "(redis\\.conf|mongod\\.conf|postgresql\\.conf|my\\.cnf|mysqld\\.cnf)$",
+    "match": "^\\s*(bind\\s+0\\.0\\.0\\.0|bindIp:\\s*0\\.0\\.0\\.0|listen_addresses\\s*=\\s*'\\*'|bind-address\\s*=\\s*0\\.0\\.0\\.0|protected-mode\\s+no)",
+    "flags": "im",
+    "hit": [
+      "/etc/redis/redis.conf ::: bind 0.0.0.0",
+      "/etc/postgresql/16/main/postgresql.conf ::: listen_addresses = '*'"
+    ],
+    "miss": [
+      "/etc/redis/redis.conf ::: bind 127.0.0.1 -::1"
+    ],
+    "body": "Exposed Redis, MongoDB, Postgres and MySQL instances are among the most scanned targets on the internet: data gets\ndumped or ransomed, and open Redis is a classic route to running code on the server.\n\nKeep it on `127.0.0.1` and connect remotely through an SSH tunnel (`ssh -L 5432:localhost:5432 server`) or a private\nnetwork/VPN. If it must listen publicly: strong auth, TLS, and a firewall allow-list of specific IPs."
+  },
+  {
+    "id": "hardcoded-secret",
+    "title": "A secret is being written straight into source code",
+    "domain": "security",
+    "severity": "medium",
+    "on": "file",
+    "path": "\\.(py|js|mjs|cjs|ts|tsx|jsx|go|rb|php|java|cs|swift|kt)$",
+    "match": "((api[_-]?key|secret|passw(or)?d|token)\\w*[\"']?\\s*[:=]\\s*[\"'][A-Za-z0-9_\\-./+=]{12,}[\"']|\\bsk-[A-Za-z0-9_-]{20,}|\\bAKIA[0-9A-Z]{16}\\b|\\bghp_[A-Za-z0-9]{30,}|\\bxox[bp]-[A-Za-z0-9-]{10,})",
+    "hit": [
+      "config.py ::: API_KEY = \"sk-live-1234567890abcdefghijkl\"",
+      "db.js ::: const password = 'hunter2hunter2hunter2'"
+    ],
+    "miss": [
+      "config.py ::: API_KEY = os.environ[\"API_KEY\"]"
+    ],
+    "body": "Secrets in code end up in git history, screenshots, logs and every copy of the repo — and are painful to rotate.\n\nRead them from the environment (`os.environ[\"API_KEY\"]`, `process.env.API_KEY`), keep local values in a gitignored\n`.env`, and commit a `.env.example` with placeholders."
+  },
+  {
+    "id": "ssh-password-login",
+    "title": "SSH password/root login is the #1 target of brute-force bots",
+    "domain": "security",
+    "severity": "medium",
+    "on": "file",
+    "path": "sshd_config(\\.d[\\\\/].*)?$",
+    "match": "^\\s*(PasswordAuthentication|PermitRootLogin)\\s+yes",
+    "flags": "im",
+    "hit": [
+      "/etc/ssh/sshd_config ::: PermitRootLogin yes",
+      "/etc/ssh/sshd_config ::: PasswordAuthentication yes"
+    ],
+    "miss": [
+      "/etc/ssh/sshd_config ::: PasswordAuthentication no"
+    ],
+    "body": "Every public server receives thousands of SSH password guesses a day, mostly for `root`.\n\nUse keys: `ssh-copy-id user@server`, confirm key login works **in a second terminal**, then set\n`PasswordAuthentication no` and `PermitRootLogin no` (or `prohibit-password`), and `sudo systemctl reload ssh`.\nKeep the first session open until you've verified you can still get in."
+  },
+  {
+    "id": "tls-verify-disabled",
+    "title": "Code that disables certificate checks tends to reach production",
+    "domain": "security",
+    "severity": "medium",
+    "on": "file",
+    "path": "\\.(py|js|mjs|cjs|ts|go|rb|php)$",
+    "match": "(verify\\s*=\\s*False|rejectUnauthorized\\s*:\\s*false|NODE_TLS_REJECT_UNAUTHORIZED|InsecureSkipVerify\\s*:\\s*true|CURLOPT_SSL_VERIFYPEER\\W+(false|0))",
+    "hit": [
+      "client.py ::: requests.get(url, verify=False)",
+      "api.ts ::: new https.Agent({ rejectUnauthorized: false })"
+    ],
+    "miss": [
+      "client.py ::: requests.get(url, timeout=10)"
+    ],
+    "body": "Disabling certificate verification \"just for testing\" is one of the most common ways man-in-the-middle bugs ship.\n\nPoint the client at the right CA instead (`verify=\"/path/ca.pem\"`, `ca: fs.readFileSync(...)`) or fix the server's\ncertificate. If it must stay for local dev, guard it behind an explicit env flag that defaults to secure."
+  },
+  {
+    "id": "execution-policy-unrestricted",
+    "title": "Execution policy Unrestricted/Bypass for the whole machine is broader than you need",
+    "domain": "windows",
+    "severity": "medium",
+    "on": "command",
+    "match": "Set-ExecutionPolicy\\s+(-ExecutionPolicy\\s+)?(Unrestricted|Bypass)\\b",
+    "unless": "-Scope\\s+Process",
+    "hit": [
+      "Set-ExecutionPolicy Unrestricted",
+      "Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine"
+    ],
+    "miss": [
+      "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser",
+      "Set-ExecutionPolicy Bypass -Scope Process"
+    ],
+    "body": "Unrestricted/Bypass at machine scope lets any downloaded `.ps1` run without a prompt, for every user, permanently.\n\nUsually enough: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` (your local scripts run, downloaded ones must be\nsigned or unblocked with `Unblock-File`), or `-Scope Process` for just this one window."
+  }
+]

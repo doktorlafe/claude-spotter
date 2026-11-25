@@ -1,0 +1,12 @@
+{
+  "name": "spotter",
+  "description": "Spotter — the experienced friend looking over Claude's shoulder.",
+  "owner": { "name": "Spotter contributors" },
+  "plugins": [
+    {
+      "name": "spotter",
+      "source": "./",
+      "description": "Catches well-known pitfalls right before they bite, with a one-line warning and the better way."
+    }
+  ]
+}
