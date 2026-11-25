@@ -30,7 +30,7 @@ No AI calls, no tokens, no telemetry. Just a curated library of traps, matched l
 In Claude Code:
 
 ```text
-/plugin marketplace add doktorlafe/spotter
+/plugin marketplace add doktorlafe/claude-spotter
 /plugin install spotter@spotter
 ```
 

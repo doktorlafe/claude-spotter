@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Stops you one second before you step into a trap only experience would warn you about — Docker bypassing your firewall, rm -rf on an empty variable, secrets in git, and dozens more.",
   "license": "MIT",
-  "homepage": "https://github.com/doktorlafe/spotter",
-  "repository": "https://github.com/doktorlafe/spotter",
+  "homepage": "https://github.com/doktorlafe/claude-spotter",
+  "repository": "https://github.com/doktorlafe/claude-spotter",
   "keywords": ["safety", "hooks", "pitfalls", "learning", "devops", "security", "beginners"]
 }
