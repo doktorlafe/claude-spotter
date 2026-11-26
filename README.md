@@ -9,19 +9,7 @@ Spotter is a [Claude Code](https://claude.com/claude-code) plugin that watches w
 the file being written, the error that just appeared) and speaks up **only** when it matches a known trap. Then it
 gives you one line and the better way.
 
-```text
-> run postgres in docker so my app can use it
-
-● Bash(docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=secret postgres)
-  🛟 Spotter: Docker-published ports bypass your firewall (ufw/firewalld) and are open to the internet
-
-● Spotter caught something worth knowing: Docker writes its own iptables rules, so ufw won't protect
-  port 5432 and anyone on the internet could reach your database. Since only your app needs it,
-  I'll bind it to localhost instead:
-
-● Bash(docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=secret postgres)
-  ✓ done
-```
+![Spotter pausing a docker run that would expose Postgres to the internet](docs/spotter.gif)
 
 No AI calls, no tokens, no telemetry. Just a curated library of traps, matched locally in about 0.1 seconds.
 
