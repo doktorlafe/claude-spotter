@@ -1,5 +1,12 @@
 # 🛟 Spotter
 
+[![CI](https://github.com/doktorlafe/claude-spotter/actions/workflows/ci.yml/badge.svg)](https://github.com/doktorlafe/claude-spotter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](https://claude.com/claude-code)
+[![Traps](https://img.shields.io/badge/traps-36-orange)](traps)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](package.json)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 **Spotter stops you one second before you step into a trap only experience would warn you about.**
 
 AI lets you build things far outside what you already know. That's the magic, and also the problem: AI answers the
